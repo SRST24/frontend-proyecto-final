@@ -1,4 +1,4 @@
-import 'dart:convert';
+// lib/pages/requests_page.dart
 import 'package:flutter/material.dart';
 import '../api/api_client.dart';
 
@@ -11,137 +11,104 @@ class RequestsPage extends StatefulWidget {
 }
 
 class _RequestsPageState extends State<RequestsPage> {
+  List<dynamic> _items = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      await widget.api.loadToken();
+      final r = await widget.api.getRequests();
+      if (!mounted) return;
+      setState(() { _items = r; _loading = false; });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _loading = false; });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
+
+  Future<void> _createRequestDialog() async {
+    final workerCtl = TextEditingController();
+    final serviceCtl = TextEditingController();
+    await showDialog(context: context, builder: (ctx) {
+      return AlertDialog(
+        title: const Text('Nueva Request'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: workerCtl, decoration: const InputDecoration(labelText: 'Worker ID')),
+            TextField(controller: serviceCtl, decoration: const InputDecoration(labelText: 'Service ID')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          FilledButton(onPressed: () async {
+            final w = int.tryParse(workerCtl.text.trim()) ?? 0;
+            final s = int.tryParse(serviceCtl.text.trim()) ?? 0;
+            await widget.api.createRequest(workerId: w, serviceId: s);
+            if (!mounted) return;
+            Navigator.pop(ctx);
+            await _load();
+          }, child: const Text('Crear'))
+        ],
+      );
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: Row(
-            children: [
-              FilledButton.icon(
-                onPressed: () async {
-                  await showDialog(context: context, builder: (_) => _CreateRequestDialog(api: widget.api));
-                  setState(() {});
-                },
-                icon: const Icon(Icons.add),
-                label: const Text('Nueva Request'),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                onPressed: () => setState(() {}),
-                icon: const Icon(Icons.refresh),
-                label: const Text('Recargar'),
-              ),
-            ],
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Requests'),
+        actions: [
+          if (widget.api.isClient) IconButton(
+            onPressed: _createRequestDialog,
+            icon: const Icon(Icons.add),
+            tooltip: 'Nueva Request',
           ),
-        ),
-        Expanded(
-          child: FutureBuilder<List<Map<String, dynamic>>>(
-            future: widget.api.myRequests(),
-            builder: (context, snap) {
-              if (snap.connectionState != ConnectionState.done) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snap.hasError) {
-                return Center(child: Text('Error: ${snap.error}'));
-              }
-              final items = snap.data ?? [];
-              if (items.isEmpty) return const Center(child: Text('Sin requests'));
-              return ListView.builder(
-                itemCount: items.length,
-                itemBuilder: (_, i) {
-                  final e = items[i];
-                  final id = e['id'] ?? e['requestId'] ?? 0;
-                  final status = (e['status'] ?? '').toString();
-                  final desc = (e['description'] ?? e['details'] ?? '').toString();
-                  return ListTile(
-                    title: Text('Request #$id  •  $status'),
-                    subtitle: Text(desc),
-                    trailing: _StatusChanger(
-                      onChange: (newStatus) async {
-                        final rid = id is int ? id : int.tryParse(id.toString()) ?? 0;
-                        await widget.api.updateRequestStatus(rid, newStatus);
-                        if (!context.mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Estado actualizado')));
-                        setState(() {});
-                      },
-                    ),
-                  );
-                },
+        ],
+      ),
+      body: _loading
+        ? const Center(child: CircularProgressIndicator())
+        : ListView.builder(
+            itemCount: _items.length,
+            itemBuilder: (ctx, i) {
+              final e = _items[i] as Map<String, dynamic>;
+              final id = e['id'];
+              final status = (e['status'] ?? '').toString();
+              return ListTile(
+                title: Text('Request #$id'),
+                subtitle: Text('Estado: $status'),
+                trailing: _StatusChanger(
+                  currentStatus: status,
+                  isClient: widget.api.isClient,
+                  onChange: (newStatus) async {
+                    final rid = id is int ? id : int.tryParse(id.toString()) ?? 0;
+                    await widget.api.updateRequestStatus(rid, newStatus);
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Estado actualizado')));
+                    await _load();
+                  },
+                ),
               );
             },
           ),
-        ),
-      ],
-    );
-  }
-}
-
-class _CreateRequestDialog extends StatefulWidget {
-  final ApiClient api;
-  const _CreateRequestDialog({required this.api});
-
-  @override
-  State<_CreateRequestDialog> createState() => _CreateRequestDialogState();
-}
-
-class _CreateRequestDialogState extends State<_CreateRequestDialog> {
-  final workerId = TextEditingController();
-  final serviceId = TextEditingController();
-  final description = TextEditingController();
-  String payloadJson = '';
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Crear Request'),
-      content: SingleChildScrollView(
-        child: Column(
-          children: [
-            TextField(controller: workerId, decoration: const InputDecoration(labelText: 'workerId')),
-            TextField(controller: serviceId, decoration: const InputDecoration(labelText: 'serviceId (opcional)')),
-            TextField(controller: description, decoration: const InputDecoration(labelText: 'description')),
-            const SizedBox(height: 8),
-            ExpansionTile(
-              title: const Text('Payload JSON (opcional si tu esquema es distinto)'),
-              children: [
-                TextField(
-                  maxLines: 6,
-                  decoration: const InputDecoration(border: OutlineInputBorder()),
-                  onChanged: (v) => payloadJson = v,
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-        FilledButton(
-          onPressed: () async {
-            Map<String, dynamic> payload = {
-              'workerId': int.tryParse(workerId.text.trim()) ?? 0,
-              'serviceId': int.tryParse(serviceId.text.trim()),
-              'description': description.text.trim(),
-            };
-            if (payloadJson.trim().isNotEmpty) {
-              try { payload = Map<String, dynamic>.from(jsonDecode(payloadJson)); } catch (_) {}
-            }
-            await widget.api.createRequest(payload);
-            if (!context.mounted) return;
-            Navigator.pop(context);
-          },
-          child: const Text('Crear'),
-        ),
-      ],
     );
   }
 }
 
 class _StatusChanger extends StatefulWidget {
+  final String currentStatus;
+  final bool isClient;
   final Future<void> Function(String) onChange;
-  const _StatusChanger({required this.onChange});
+  const _StatusChanger({required this.currentStatus, required this.isClient, required this.onChange});
 
   @override
   State<_StatusChanger> createState() => _StatusChangerState();
@@ -149,18 +116,32 @@ class _StatusChanger extends StatefulWidget {
 
 class _StatusChangerState extends State<_StatusChanger> {
   String? value;
-  final options = const ['Pending','Accepted','Completed','Cancelled'];
+
+  List<String> _options() {
+    final s = widget.currentStatus.toLowerCase();
+    if (widget.isClient) {
+      if (s == 'pending') return const ['Canceled'];
+      if (s == 'accepted') return const ['Completed'];
+    } else { // Worker
+      if (s == 'pending') return const ['Accepted'];
+      if (s == 'accepted') return const ['Completed'];
+    }
+    return const [];
+  }
 
   @override
   Widget build(BuildContext context) {
+    final opts = _options();
+    if (opts.isEmpty) return const SizedBox.shrink();
     return DropdownButton<String>(
       value: value,
       hint: const Text('Estado'),
-      items: options.map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+      items: opts.map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
       onChanged: (v) async {
         if (v == null) return;
         setState(() => value = v);
-        await widget.onChange(v);
+        final apiValue = (v == 'Cancelled') ? 'Canceled' : v;
+        await widget.onChange(apiValue);
       },
     );
   }

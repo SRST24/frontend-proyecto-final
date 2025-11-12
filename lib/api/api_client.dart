@@ -1,166 +1,158 @@
+// lib/api/api_client.dart
+// Hotfix v2: tipado fuerte en services() y reviewsForWorker() para encajar con Future<List<Map<String, dynamic>>>.
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiClient {
-  static const String baseUrl = 'https://app-251110212719.azurewebsites.net';
-
-  static const Duration _httpTimeout = Duration(seconds: 15);
-  static const Duration _prefsTimeout = Duration(seconds: 5);
-
+  static const String _defaultBaseUrl = String.fromEnvironment('API_BASE_URL', defaultValue: 'http://localhost:5271');
+  final String baseUrl;
   String? _token;
+  String? _role;
+  String? _userId;
+
+  ApiClient([String? baseUrl]) : baseUrl = baseUrl ?? _defaultBaseUrl;
+
+  static const _prefsTimeout = Duration(seconds: 2);
+
   String? get token => _token;
-  bool get hasToken => _token != null && _token!.isNotEmpty;
+  String? get role => _role;
+  String? get userId => _userId;
+
+  bool get isLoggedIn => _token != null && _token!.isNotEmpty;
+  bool get hasToken => isLoggedIn;
+
+  bool get isWorker => (_role ?? '').toLowerCase() == 'worker';
+  bool get isClient => (_role ?? '').toLowerCase() == 'client';
+
+  Map<String, String> _headers() => {
+        'Content-Type': 'application/json',
+        if (_token != null) 'Authorization': 'Bearer $_token',
+      };
+
+  Future<void> saveSession(String token, String role, String userId) async {
+    final sp = await SharedPreferences.getInstance().timeout(_prefsTimeout);
+    await sp.setString('token', token).timeout(_prefsTimeout);
+    await sp.setString('role', role).timeout(_prefsTimeout);
+    await sp.setString('userId', userId).timeout(_prefsTimeout);
+    _token = token;
+    _role = role;
+    _userId = userId;
+  }
 
   Future<void> loadToken() async {
     final sp = await SharedPreferences.getInstance().timeout(_prefsTimeout);
     _token = sp.getString('token');
+    _role = sp.getString('role');
+    _userId = sp.getString('userId');
   }
 
-  Future<void> saveSession(String token, String role) async {
-    final sp = await SharedPreferences.getInstance().timeout(_prefsTimeout);
-    await sp.setString('token', token).timeout(_prefsTimeout);
-    await sp.setString('role', role).timeout(_prefsTimeout);
-    _token = token;
-  }
-
-  Future<void> logout() async {
+  Future<void> logout() => clearSession();
+  Future<void> clearSession() async {
     final sp = await SharedPreferences.getInstance().timeout(_prefsTimeout);
     await sp.remove('token').timeout(_prefsTimeout);
     await sp.remove('role').timeout(_prefsTimeout);
+    await sp.remove('userId').timeout(_prefsTimeout);
     _token = null;
+    _role = null;
+    _userId = null;
   }
 
-  Map<String, String> _headers({bool auth = false}) => {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        if (auth && _token != null) 'Authorization': 'Bearer $_token',
-      };
-
-  Exception _error(http.Response r) {
-    var msg = r.body;
-    try {
-      final m = jsonDecode(r.body);
-      if (m is Map) {
-        if (m['message'] is String) msg = m['message'];
-        if (m['error'] is String) msg = m['error'];
-        if (m['title'] is String) msg = m['title'];
+  // --- Auth ---
+  Future<bool> login(String email, String password) async {
+    final resp = await http.post(Uri.parse('$baseUrl/api/auth/login'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'password': password}));
+    if (resp.statusCode == 200) {
+      final m = jsonDecode(resp.body) as Map<String, dynamic>;
+      final token = (m['token'] ?? m['Token'] ?? '').toString();
+      final role = (m['role'] ?? m['Role'] ?? '').toString();
+      final uid = (m['userId'] ?? m['UserId'] ?? '').toString();
+      if (token.isNotEmpty) {
+        await saveSession(token, role, uid);
+        return true;
       }
-    } catch (_) {}
-    return Exception('[${r.statusCode}] $msg');
-  }
-
-  // ===== Auth =====
-  Future<void> register(String name, String email, String password, String role) async {
-    final url = Uri.parse('$baseUrl/api/auth/register');
-    final res = await http
-        .post(url, headers: _headers(), body: jsonEncode({'name': name, 'email': email, 'password': password, 'role': role}))
-        .timeout(_httpTimeout);
-    if (res.statusCode != 200 && res.statusCode != 201) {
-      throw _error(res);
     }
+    return false;
   }
 
-  Future<void> login(String email, String password) async {
-    final url = Uri.parse('$baseUrl/api/auth/login');
-    final res = await http
-        .post(url, headers: _headers(), body: jsonEncode({'email': email, 'password': password}))
-        .timeout(_httpTimeout);
-    if (res.statusCode != 200) {
-      throw _error(res);
-    }
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    final token = (data['token'] ?? data['Token'])?.toString() ?? '';
-    final role = (data['role'] ?? data['Role'])?.toString() ?? 'client';
-    await saveSession(token, role);
+  Future<bool> register(String name, String email, String password, String role) async {
+    final resp = await http.post(Uri.parse('$baseUrl/api/auth/register'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'name': name, 'email': email, 'password': password, 'role': role}));
+    return resp.statusCode >= 200 && resp.statusCode < 300;
   }
 
-  // ===== Services =====
+  // --- Services ---
   Future<List<Map<String, dynamic>>> services() async {
-    final url = Uri.parse('$baseUrl/api/services');
-    final res = await http.get(url, headers: _headers()).timeout(_httpTimeout);
-    if (res.statusCode != 200) throw _error(res);
-    final body = jsonDecode(res.body);
-    if (body is List) {
-      return body.cast<Map>().map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    final r = await http.get(Uri.parse('$baseUrl/api/services'), headers: _headers());
+    if (r.statusCode == 200) {
+      final data = jsonDecode(r.body);
+      if (data is List) {
+        return data.map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map)).toList();
+      }
+      throw Exception('Formato inesperado en /api/services');
     }
-    return [];
+    throw Exception('Error al cargar servicios: ${r.statusCode}');
   }
 
-  // ===== Workers =====
-  Future<List<Map<String, dynamic>>> workers() async {
-    final url = Uri.parse('$baseUrl/api/workers');
-    final res = await http.get(url, headers: _headers()).timeout(_httpTimeout);
-    if (res.statusCode != 200) throw _error(res);
-    final body = jsonDecode(res.body);
-    if (body is List) {
-      return body.cast<Map>().map((e) => Map<String, dynamic>.from(e as Map)).toList();
-    }
-    return [];
+  // --- Workers ---
+  Future<List<dynamic>> getWorkers() async {
+    final r = await http.get(Uri.parse('$baseUrl/api/workers'), headers: _headers());
+    if (r.statusCode == 200) return jsonDecode(r.body) as List<dynamic>;
+    throw Exception('Error al cargar workers: ${r.statusCode}');
   }
 
-  Future<Map<String, dynamic>> createWorker(Map<String, dynamic> payload) async {
-    final url = Uri.parse('$baseUrl/api/workers');
-    final res = await http.post(url, headers: _headers(auth: true), body: jsonEncode(payload)).timeout(_httpTimeout);
-    if (res.statusCode != 200 && res.statusCode != 201) throw _error(res);
-    return Map<String, dynamic>.from(jsonDecode(res.body));
+  Future<void> createWorker(Map<String, dynamic> body) async {
+    final r = await http.post(Uri.parse('$baseUrl/api/workers'), headers: _headers(), body: jsonEncode(body));
+    if (r.statusCode < 200 || r.statusCode >= 300) throw Exception('No se pudo crear worker (${r.statusCode})');
   }
 
-  Future<Map<String, dynamic>> updateWorker(int id, Map<String, dynamic> payload) async {
-    final url = Uri.parse('$baseUrl/api/workers/$id');
-    final res = await http.put(url, headers: _headers(auth: true), body: jsonEncode(payload)).timeout(_httpTimeout);
-    if (res.statusCode != 200) throw _error(res);
-    return Map<String, dynamic>.from(jsonDecode(res.body));
+  Future<void> updateWorker(int id, Map<String, dynamic> body) async {
+    final r = await http.put(Uri.parse('$baseUrl/api/workers/$id'), headers: _headers(), body: jsonEncode(body));
+    if (r.statusCode < 200 || r.statusCode >= 300) throw Exception('No se pudo actualizar worker (${r.statusCode})');
   }
 
   Future<void> deleteWorker(int id) async {
-    final url = Uri.parse('$baseUrl/api/workers/$id');
-    final res = await http.delete(url, headers: _headers(auth: true)).timeout(_httpTimeout);
-    if (res.statusCode != 204) throw _error(res);
+    final r = await http.delete(Uri.parse('$baseUrl/api/workers/$id'), headers: _headers());
+    if (r.statusCode < 200 || r.statusCode >= 300) throw Exception('No se pudo eliminar worker (${r.statusCode})');
   }
 
-  // ===== Requests =====
-  Future<List<Map<String, dynamic>>> myRequests() async {
-    final url = Uri.parse('$baseUrl/api/requests');
-    final res = await http.get(url, headers: _headers(auth: true)).timeout(_httpTimeout);
-    if (res.statusCode != 200) throw _error(res);
-    final body = jsonDecode(res.body);
-    if (body is List) {
-      return body.cast<Map>().map((e) => Map<String, dynamic>.from(e as Map)).toList();
-    }
-    return [];
+  // --- Requests ---
+  Future<List<dynamic>> getRequests() async {
+    final r = await http.get(Uri.parse('$baseUrl/api/requests'), headers: _headers());
+    if (r.statusCode == 200) return jsonDecode(r.body) as List<dynamic>;
+    throw Exception('Error al cargar requests: ${r.statusCode}');
   }
 
-  Future<Map<String, dynamic>> createRequest(Map<String, dynamic> payload) async {
-    final url = Uri.parse('$baseUrl/api/requests');
-    final res = await http.post(url, headers: _headers(auth: true), body: jsonEncode(payload)).timeout(_httpTimeout);
-    if (res.statusCode != 200 && res.statusCode != 201) throw _error(res);
-    return Map<String, dynamic>.from(jsonDecode(res.body));
+  Future<void> createRequest({required int workerId, required int serviceId}) async {
+    final body = {'workerId': workerId, 'serviceId': serviceId};
+    final r = await http.post(Uri.parse('$baseUrl/api/requests'), headers: _headers(), body: jsonEncode(body));
+    if (r.statusCode < 200 || r.statusCode >= 300) throw Exception('No se pudo crear request (${r.statusCode})');
   }
 
-  Future<Map<String, dynamic>> updateRequestStatus(int id, String newStatus) async {
-    final url = Uri.parse('$baseUrl/api/requests/$id/status');
-    final res = await http.patch(url, headers: _headers(auth: true), body: jsonEncode({'status': newStatus})).timeout(_httpTimeout);
-    if (res.statusCode != 200) throw _error(res);
-    return Map<String, dynamic>.from(jsonDecode(res.body));
+  Future<void> updateRequestStatus(int requestId, String newStatus) async {
+    final normalized = (newStatus == 'Cancelled') ? 'Canceled' : newStatus;
+    final r = await http.patch(Uri.parse('$baseUrl/api/requests/$requestId/status'),
+        headers: _headers(), body: jsonEncode({'status': normalized}));
+    if (r.statusCode < 200 || r.statusCode >= 300) throw Exception('No se pudo actualizar estado (${r.statusCode})');
   }
 
-  // ===== Reviews =====
+  // --- Reviews ---
   Future<List<Map<String, dynamic>>> reviewsForWorker(int workerId) async {
-    final url = Uri.parse('$baseUrl/api/reviews/worker/$workerId');
-    final res = await http.get(url, headers: _headers()).timeout(_httpTimeout);
-    if (res.statusCode != 200) throw _error(res);
-    final body = jsonDecode(res.body);
-    if (body is List) {
-      return body.cast<Map>().map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    final r = await http.get(Uri.parse('$baseUrl/api/reviews/worker/$workerId'), headers: _headers());
+    if (r.statusCode == 200) {
+      final data = jsonDecode(r.body);
+      if (data is List) {
+        return data.map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map)).toList();
+      }
+      throw Exception('Formato inesperado en /api/reviews/worker/$workerId');
     }
-    return [];
+    throw Exception('Error al cargar reviews: ${r.statusCode}');
   }
 
-  Future<Map<String, dynamic>> createReview(Map<String, dynamic> payload) async {
-    final url = Uri.parse('$baseUrl/api/reviews');
-    final res = await http.post(url, headers: _headers(auth: true), body: jsonEncode(payload)).timeout(_httpTimeout);
-    if (res.statusCode != 200 && res.statusCode != 201) throw _error(res);
-    return Map<String, dynamic>.from(jsonDecode(res.body));
+  Future<void> createReview(Map<String, dynamic> payload) async {
+    final r = await http.post(Uri.parse('$baseUrl/api/reviews'), headers: _headers(), body: jsonEncode(payload));
+    if (r.statusCode < 200 || r.statusCode >= 300) throw Exception('No se pudo crear review (${r.statusCode})');
   }
 }

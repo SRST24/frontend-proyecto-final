@@ -1,8 +1,11 @@
+// lib/pages/home_page.dart
 import 'package:flutter/material.dart';
 import '../api/api_client.dart';
-import 'workers_page.dart';
 import 'requests_page.dart';
+import 'workers_page.dart';
+import 'services_page.dart';
 import 'reviews_page.dart';
+import 'login_page.dart';
 
 class HomePage extends StatefulWidget {
   final ApiClient api;
@@ -13,91 +16,133 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  int index = 0;
+  int _index = 0;
+  bool _booting = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    await widget.api.loadToken();
+    if (!mounted) return;
+    setState(() => _booting = false);
+  }
+
+  List<_TabDef> _tabs() {
+    if (!widget.api.hasToken) {
+      return [
+        _TabDef('Servicios', const Icon(Icons.work_outline), ServicesPage(api: widget.api)),
+        _TabDef('Cuenta', const Icon(Icons.person_outline), _AccountAnon(api: widget.api)),
+      ];
+    }
+    if (widget.api.isClient) {
+      return [
+        _TabDef('Servicios', const Icon(Icons.work_outline), ServicesPage(api: widget.api)),
+        _TabDef('Requests', const Icon(Icons.receipt_long_outlined), RequestsPage(api: widget.api)),
+        _TabDef('Reviews', const Icon(Icons.rate_review_outlined), ReviewsPage(api: widget.api)),
+        _TabDef('Cuenta', const Icon(Icons.person_outline), _AccountAuthed(api: widget.api)),
+      ];
+    } else if (widget.api.isWorker) {
+      return [
+        _TabDef('Workers', const Icon(Icons.handyman_outlined), WorkersPage(api: widget.api)),
+        _TabDef('Servicios', const Icon(Icons.work_outline), ServicesPage(api: widget.api)),
+        _TabDef('Requests', const Icon(Icons.receipt_long_outlined), RequestsPage(api: widget.api)),
+        _TabDef('Reviews', const Icon(Icons.rate_review_outlined), ReviewsPage(api: widget.api)),
+        _TabDef('Cuenta', const Icon(Icons.person_outline), _AccountAuthed(api: widget.api)),
+      ];
+    } else {
+      // Admin u otro rol
+      return [
+        _TabDef('Servicios', const Icon(Icons.work_outline), ServicesPage(api: widget.api)),
+        _TabDef('Workers', const Icon(Icons.handyman_outlined), WorkersPage(api: widget.api)),
+        _TabDef('Requests', const Icon(Icons.receipt_long_outlined), RequestsPage(api: widget.api)),
+        _TabDef('Reviews', const Icon(Icons.rate_review_outlined), ReviewsPage(api: widget.api)),
+        _TabDef('Cuenta', const Icon(Icons.person_outline), _AccountAuthed(api: widget.api)),
+      ];
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final tabs = [
-      _ServicesTab(api: widget.api),
-      WorkersPage(api: widget.api),
-      RequestsPage(api: widget.api),
-      ReviewsPage(api: widget.api),
-      _AccountTab(api: widget.api),
-    ];
-
+    if (_booting) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    final tabs = _tabs();
+    final current = tabs[_index.clamp(0, tabs.length - 1)];
     return Scaffold(
       appBar: AppBar(title: const Text('ManoVecina')),
-      body: tabs[index],
+      body: current.page,
       bottomNavigationBar: NavigationBar(
-        selectedIndex: index,
-        onDestinationSelected: (i) => setState(() => index = i),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.home_repair_service_outlined), label: 'Servicios'),
-          NavigationDestination(icon: Icon(Icons.handyman_outlined), label: 'Workers'),
-          NavigationDestination(icon: Icon(Icons.request_page_outlined), label: 'Requests'),
-          NavigationDestination(icon: Icon(Icons.reviews_outlined), label: 'Reviews'),
-          NavigationDestination(icon: Icon(Icons.person_outline), label: 'Cuenta'),
+        selectedIndex: _index,
+        onDestinationSelected: (i) => setState(() => _index = i),
+        destinations: [
+          for (final t in tabs) NavigationDestination(icon: t.icon, label: t.label),
         ],
       ),
     );
   }
 }
 
-class _ServicesTab extends StatelessWidget {
-  final ApiClient api;
-  const _ServicesTab({required this.api});
+class _TabDef {
+  final String label;
+  final Icon icon;
+  final Widget page;
+  _TabDef(this.label, this.icon, this.page);
+}
 
+class _AccountAnon extends StatelessWidget {
+  final ApiClient api;
+  const _AccountAnon({required this.api, super.key});
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<List<Map<String, dynamic>>>(
-      future: api.services(),
-      builder: (context, snap) {
-        if (snap.connectionState != ConnectionState.done) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snap.hasError) {
-          return Center(child: Text('Error: ${snap.error}'));
-        }
-        final items = snap.data ?? [];
-        if (items.isEmpty) return const Center(child: Text('Sin servicios'));
-        return ListView.builder(
-          itemCount: items.length,
-          itemBuilder: (_, i) {
-            final e = items[i];
-            final title = (e['title'] ?? e['name'] ?? e['serviceName'] ?? 'Servicio').toString();
-            final desc = (e['description'] ?? e['summary'] ?? '').toString();
-            return ListTile(
-              title: Text(title),
-              subtitle: Text(desc),
-            );
-          },
-        );
-      },
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('No has iniciado sesión'),
+            const SizedBox(height: 8),
+            FilledButton(
+              onPressed: () {
+                Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => LoginPage(api: api)));
+              },
+              child: const Text('Iniciar sesión'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
 
-class _AccountTab extends StatelessWidget {
+class _AccountAuthed extends StatelessWidget {
   final ApiClient api;
-  const _AccountTab({required this.api});
-
+  const _AccountAuthed({required this.api, super.key});
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(api.hasToken ? 'Sesión activa' : 'Sin sesión'),
-          const SizedBox(height: 12),
-          FilledButton(
-            onPressed: () async {
-              await api.logout();
-              if (!context.mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sesión cerrada')));
-            },
-            child: const Text('Cerrar sesión'),
-          ),
-        ],
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Rol: ${api.role ?? '-'}'),
+            const SizedBox(height: 12),
+            FilledButton.tonal(
+              onPressed: () async {
+                await api.logout();
+                if (context.mounted) {
+                  Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => LoginPage(api: api)));
+                }
+              },
+              child: const Text('Cerrar sesión'),
+            ),
+          ],
+        ),
       ),
     );
   }

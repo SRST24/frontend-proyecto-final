@@ -1,4 +1,4 @@
-import 'dart:convert';
+// lib/pages/workers_page.dart
 import 'package:flutter/material.dart';
 import '../api/api_client.dart';
 
@@ -11,183 +11,146 @@ class WorkersPage extends StatefulWidget {
 }
 
 class _WorkersPageState extends State<WorkersPage> {
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: Row(
-            children: [
-              FilledButton.icon(
-                onPressed: () async {
-                  await showDialog(context: context, builder: (_) => _EditWorkerDialog(api: widget.api));
-                  setState(() {});
-                },
-                icon: const Icon(Icons.add),
-                label: const Text('Crear Worker'),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                onPressed: () => setState(() {}),
-                icon: const Icon(Icons.refresh),
-                label: const Text('Recargar'),
-              ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: FutureBuilder<List<Map<String, dynamic>>>(
-            future: widget.api.workers(),
-            builder: (context, snap) {
-              if (snap.connectionState != ConnectionState.done) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snap.hasError) {
-                return Center(child: Text('Error: ${snap.error}'));
-              }
-              final items = snap.data ?? [];
-              if (items.isEmpty) return const Center(child: Text('Sin workers'));
-              return ListView.builder(
-                itemCount: items.length,
-                itemBuilder: (_, i) {
-                  final e = items[i];
-                  final id = e['id'] ?? e['workerId'] ?? 0;
-                  final name = (e['name'] ?? e['fullName'] ?? 'Worker').toString();
-                  final prof = (e['profession'] ?? e['title'] ?? '').toString();
-                  return ListTile(
-                    leading: const Icon(Icons.person_outline),
-                    title: Text('$name  (#$id)'),
-                    subtitle: Text(prof),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          onPressed: () async {
-                            await showDialog(context: context, builder: (_) => _EditWorkerDialog(api: widget.api, existing: e));
-                            setState(() {});
-                          },
-                          icon: const Icon(Icons.edit),
-                        ),
-                        IconButton(
-                          onPressed: () async {
-                            final workerId = id is int ? id : int.tryParse(id.toString()) ?? 0;
-                            await widget.api.deleteWorker(workerId);
-                            if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Eliminado')));
-                            setState(() {});
-                          },
-                          icon: const Icon(Icons.delete_outline),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _EditWorkerDialog extends StatefulWidget {
-  final ApiClient api;
-  final Map<String, dynamic>? existing;
-  const _EditWorkerDialog({required this.api, this.existing});
-
-  @override
-  State<_EditWorkerDialog> createState() => _EditWorkerDialogState();
-}
-
-class _EditWorkerDialogState extends State<_EditWorkerDialog> {
-  final name = TextEditingController();
-  final profession = TextEditingController();
-  final bio = TextEditingController();
-  final phone = TextEditingController();
-  String rawJson = '';
-  bool loading = false;
-  String? error;
+  List<Map<String, dynamic>> _workers = [];
+  bool _loading = true;
 
   @override
   void initState() {
     super.initState();
-    if (widget.existing != null) {
-      name.text = (widget.existing!['name'] ?? '').toString();
-      profession.text = (widget.existing!['profession'] ?? '').toString();
-      bio.text = (widget.existing!['bio'] ?? '').toString();
-      phone.text = (widget.existing!['phone'] ?? '').toString();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      await widget.api.loadToken();
+      final w = await widget.api.getWorkers();
+      if (!mounted) return;
+      setState(() {
+        _workers = w.map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map)).toList();
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
+  }
+
+  Future<void> _openForm({Map<String, dynamic>? initial}) async {
+    final name = TextEditingController(text: initial?['name']?.toString() ?? '');
+    final phone = TextEditingController(text: initial?['phone']?.toString() ?? '');
+    final desc = TextEditingController(text: initial?['description']?.toString() ?? '');
+    final isEdit = initial != null;
+    await showDialog(context: context, builder: (ctx) {
+      return AlertDialog(
+        title: Text(isEdit ? 'Editar perfil' : 'Crear perfil'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: name, decoration: const InputDecoration(labelText: 'Nombre')),
+              TextField(controller: phone, decoration: const InputDecoration(labelText: 'Teléfono')),
+              TextField(controller: desc, decoration: const InputDecoration(labelText: 'Descripción')),
+              const SizedBox(height: 8),
+              const Text('Nota: sólo el dueño del perfil puede modificarlo.'),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          FilledButton(
+            onPressed: () async {
+              final body = {
+                'name': name.text.trim(),
+                'phone': phone.text.trim(),
+                'description': desc.text.trim(),
+              };
+              try {
+                if (isEdit) {
+                  final id = int.tryParse(initial!['id'].toString()) ?? 0;
+                  await widget.api.updateWorker(id, body);
+                } else {
+                  await widget.api.createWorker(body);
+                }
+                if (!mounted) return;
+                Navigator.pop(ctx);
+                await _load();
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+              }
+            },
+            child: Text(isEdit ? 'Guardar' : 'Crear'),
+          ),
+        ],
+      );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final isEdit = widget.existing != null;
-    return AlertDialog(
-      title: Text(isEdit ? 'Editar Worker' : 'Crear Worker'),
-      content: SingleChildScrollView(
-        child: Column(
-          children: [
-            TextField(controller: name, decoration: const InputDecoration(labelText: 'name')),
-            TextField(controller: profession, decoration: const InputDecoration(labelText: 'profession')),
-            TextField(controller: bio, decoration: const InputDecoration(labelText: 'bio')),
-            TextField(controller: phone, decoration: const InputDecoration(labelText: 'phone')),
-            const SizedBox(height: 8),
-            ExpansionTile(
-              title: const Text('Payload JSON opcional'),
-              children: [
-                TextField(
-                  maxLines: 6,
-                  decoration: const InputDecoration(border: OutlineInputBorder()),
-                  onChanged: (v) => rawJson = v,
-                ),
-              ],
-            ),
-            if (error != null) Text(error!, style: const TextStyle(color: Colors.red)),
-          ],
-        ),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Workers'),
+        actions: [
+          if (widget.api.isWorker) IconButton(
+            icon: const Icon(Icons.add),
+            tooltip: 'Crear mi perfil',
+            onPressed: () => _openForm(),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-        FilledButton(
-          onPressed: loading ? null : () async {
-            setState(() { loading = true; error = null; });
-            try {
-              final payload = <String, dynamic>{
-                'name': name.text.trim(),
-                'profession': profession.text.trim(),
-                'bio': bio.text.trim(),
-                'phone': phone.text.trim(),
-              };
-              if (rawJson.trim().isNotEmpty) {
-                try {
-                  final extra = jsonDecode(rawJson);
-                  if (extra is Map<String, dynamic>) {
-                    payload.addAll(extra);
-                  }
-                } catch (_) {}
-              }
-              if (isEdit) {
-                final rawId = widget.existing!['id'] ?? widget.existing!['workerId'];
-                final id = rawId is int ? rawId : int.tryParse(rawId.toString()) ?? 0;
-                await widget.api.updateWorker(id, payload);
-              } else {
-                await widget.api.createWorker(payload);
-              }
-              if (!mounted) return;
-              Navigator.pop(context);
-            } catch (e) {
-              if (!mounted) return;
-              setState(() { error = e.toString(); });
-            } finally {
-              if (!mounted) return;
-              setState(() { loading = false; });
-            }
-          },
-          child: Text(loading ? 'Guardando...' : 'Guardar'),
-        ),
-      ],
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView.builder(
+              itemCount: _workers.length,
+              itemBuilder: (ctx, i) {
+                final e = _workers[i];
+                final id = e['id'];
+                final name = e['name']?.toString() ?? 'Sin nombre';
+                return ListTile(
+                  title: Text(name),
+                  subtitle: Text('ID: $id'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (widget.api.isWorker)
+                        IconButton(
+                          icon: const Icon(Icons.edit),
+                          onPressed: () => _openForm(initial: e),
+                          tooltip: 'Editar mi perfil',
+                        ),
+                      if (widget.api.isWorker)
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline),
+                          onPressed: () async {
+                            final ok = await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                title: const Text('Eliminar'),
+                                content: const Text('¿Seguro que deseas eliminar tu perfil?'),
+                                actions: [
+                                  TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+                                  FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Eliminar')),
+                                ],
+                              ),
+                            );
+                            if (ok != true) return;
+                            try {
+                              await widget.api.deleteWorker(int.tryParse(id.toString()) ?? 0);
+                              await _load();
+                            } catch (e) {
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+                            }
+                          },
+                          tooltip: 'Eliminar mi perfil',
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
     );
   }
 }
